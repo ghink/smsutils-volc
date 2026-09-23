@@ -38,7 +38,7 @@ func (c Client) SendMessage(dest string, sender string, template string, vars mo
 	}
 
 	// Send request
-	result, statusCode, err := sms.DefaultInstance.Send(req)
+	result, statusCode, err := c.Client.Send(req)
 	if err != nil {
 		return err
 	}

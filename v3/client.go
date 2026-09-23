@@ -1,14 +1,16 @@
 package volc
 
 import (
-	"github.com/volcengine/volc-sdk-golang/base"
 	"github.com/volcengine/volc-sdk-golang/service/sms"
 	"go.gh.ink/smsutils/v3/errors"
 	"go.gh.ink/smsutils/v3/model"
 )
 
 type Client struct {
-	Client     *base.Client
+	// Client is this channel's own SDK instance. The volc SDK also exports a
+	// package-level DefaultInstance; configuring keys there would make every
+	// channel built in one process share whichever credentials were set last.
+	Client     *sms.SMS
 	SmsAccount string
 	// JSON
 	Marshal   func(any) ([]byte, error)
@@ -24,11 +26,11 @@ func (d Driver) NewClient(params model.DriverClientParam) (model.Client, error) 
 	}
 
 	// Create volc client
-	client := sms.NewInstance().Client
+	client := sms.NewInstance()
 
 	// Set access key and secret key
-	sms.DefaultInstance.Client.SetAccessKey(ak)
-	sms.DefaultInstance.Client.SetSecretKey(sk)
+	client.Client.SetAccessKey(ak)
+	client.Client.SetSecretKey(sk)
 
 	return Client{
 		Client:     client,

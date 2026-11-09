@@ -4,12 +4,14 @@ on:
   release:
     types: [published]
   push:
+    branches:
+      - '**'
     tags:
       - 'v*'
       - '*'
 
 jobs:
-  refresh:
+  ci:
     runs-on: node-24-alpine
 
     steps:
@@ -34,23 +36,58 @@ jobs:
           
           cd ./v3
           
-          # Extract the 'go' directive from go.mod (e.g. 'go 1.25').
           v=$(awk '/^go /{print $2; exit}' go.mod || true)
           if [ -z "$v" ]; then
-            echo "No 'go' directive found in go.mod, defaulting to 1.25"
-            v=1.25
+            v=1.22
           fi
-          echo "Detected go version: $v"
+          vt="$v"
+          case "$vt" in
+            *.*.*) ;;
+            *.*) vt="$vt.0" ;;
+          esac
           echo "go-version=$v" >> $GITHUB_OUTPUT
+          echo "go-version-tarball=$vt" >> $GITHUB_OUTPUT
           
           cd ../
+
+      - name: Install Go (tarball)
+        shell: sh
+        run: |
+          set -eux
+          v="${{ steps.get_go_version.outputs.go-version-tarball }}"
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64|amd64) goarch="amd64" ;;
+            aarch64|arm64) goarch="arm64" ;;
+            *) goarch="amd64" ;;
+          esac
+          url="http://mirrors.98e-1.net/golang/go${v}.linux-${goarch}.tar.gz"
+          curl -fsSL -o /tmp/go.tgz "$url"
+          rm -rf /usr/local/go || true
+          tar -C /usr/local -xzf /tmp/go.tgz
+          echo "PATH=/usr/local/go/bin:$PATH" >> $GITHUB_ENV
+          export PATH=/usr/local/go/bin:$PATH
+          go version
 
       - name: Fetch tags
         shell: sh
         run: |
           git fetch --tags --prune --force origin || true
 
-      - name: Determine module and tag, then refresh sum.golang.org
+      - name: Run go tests (branch/tag/release)
+        if: "startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'"
+        shell: sh
+        run: |
+          set -eux
+          
+          cd ./v3
+          
+          env GOPROXY=https://goproxy.cn,direct go test ./... -v
+          
+          cd ../
+
+      - name: Refresh gosumdb (tag/release only)
+        if: "startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'"
         shell: sh
         run: |
           set -eux
@@ -58,12 +95,6 @@ jobs:
           cd ./v3
           
           module=$(awk '/^module /{print $2; exit}' go.mod)
-          echo "Detected module: $module"
-          module_go_version=$(awk '/^go /{print $2; exit}' go.mod || true)
-          if [ -z "$module_go_version" ]; then
-            module_go_version="${{ steps.get_go_version.outputs.go-version }}"
-          fi
-          echo "Using Go version: $module_go_version"
           tag=""
           if [ -n "${GITHUB_REF:-}" ]; then
             tag=${GITHUB_REF#refs/tags/}
@@ -75,64 +106,15 @@ jobs:
           if [ -z "$tag" ]; then
             tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
           fi
-
           if [ -z "$tag" ]; then
             echo "No tag found for this run — nothing to refresh. Exiting."
             exit 0
           fi
-
-          echo "Refreshing gosumdb for $module@$tag"
-          if command -v go >/dev/null 2>&1; then
-            current_go=$(go version | awk '{print $3}' | sed 's/^go//')
-          else
-            current_go=""
-          fi
-
-          version_ge() {
-            awk -v a="$1" -v b="$2" 'BEGIN{
-              split(a, A, "."); split(b, B, ".");
-              for (i=1; i<=3; i++) {
-                ai = (i in A) ? A[i] : 0;
-                bi = (i in B) ? B[i] : 0;
-                if (ai+0 > bi+0) exit 0;
-                if (ai+0 < bi+0) exit 1;
-              }
-              exit 0;
-            }'
-          }
-
-          need_install=0
-          if [ -z "$current_go" ]; then
-            need_install=1
-          else
-            if ! version_ge "$current_go" "$module_go_version"; then
-              need_install=1
-            fi
-          fi
-
-          if [ "$need_install" -eq 1 ]; then
-            echo "Installing Go $module_go_version because current is '$current_go'"
-            arch=$(uname -m)
-            case "$arch" in
-              x86_64|amd64) goarch="amd64" ;;
-              aarch64|arm64) goarch="arm64" ;;
-              *) goarch="amd64" ;;
-            esac
-            url="http://mirrors.98e-1.net/golang/go${module_go_version}.linux-${goarch}.tar.gz"
-            echo "Downloading: $url"
-            curl -fsSL -o /tmp/go.tgz "$url"
-            rm -rf /usr/local/go || true
-            tar -C /usr/local -xzf /tmp/go.tgz
-            export PATH=/usr/local/go/bin:$PATH
-            echo "Installed: $(go version)"
-          else
-            echo "Existing go is sufficient: $current_go >= $module_go_version"
-          fi
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
-          printf '%s\n' 'module refresh-gosumdb-temp' '' "go $module_go_version" > go.mod
+          printf '%s\n' 'module refresh-gosumdb-temp' '' "go ${{ steps.get_go_version.outputs.go-version }}" > go.mod
           env GOSUMDB=sum.golang.org GOPROXY=https://goproxy.cn,direct GOFLAGS='' go get "$module@$tag"
           cd - >/dev/null || true
           rm -rf "$TMPDIR"
-
-
+          
+          cd ../
